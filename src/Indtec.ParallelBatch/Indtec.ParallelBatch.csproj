@@ -5,9 +5,21 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+
     <PackageId>Indtec.ParallelBatch</PackageId>
     <Version>0.1.0</Version>
     <Authors>Indtec</Authors>
     <Description>Lightweight .NET library for parallel batch processing with bounded concurrency, ordered results, progress reporting, partial failure handling, and cancellation support.</Description>
+    <PackageTags>dotnet;parallel;batch;concurrency;async;processing</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/fogacafe/Indtec.ParallelBatch</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
 </Project>
