@@ -1,8 +1,14 @@
 namespace Indtec.ParallelBatch;
 
+/// <summary>
+/// Configures how items are divided and processed.
+/// </summary>
 public sealed class ParallelBatchOptions
 {
+    /// <summary>Gets or sets the maximum number of items sent to one processor invocation.</summary>
     public int BatchSize { get; set; } = 10;
+
+    /// <summary>Gets or sets the maximum number of processor invocations allowed in flight at once.</summary>
     public int MaxConcurrency { get; set; } = Environment.ProcessorCount;
 
     internal void Validate()
@@ -15,6 +21,7 @@ public sealed class ParallelBatchOptions
     }
 }
 
+/// <summary>Describes processing progress at the completion of a batch.</summary>
 public readonly struct ParallelBatchProgress
 {
     public ParallelBatchProgress(int processed, int total, int succeeded, int failed)

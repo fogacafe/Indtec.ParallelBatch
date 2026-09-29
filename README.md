@@ -97,3 +97,12 @@ Pass a `CancellationToken` to stop dispatching pending work and propagate cancel
 ## Scope
 
 The library deliberately does not know about HTTP, WinForms, queues, databases, retries, or dependency injection. It coordinates asynchronous batches; your application decides what processing means.
+
+
+## Correlation errors
+
+Key-based correlation is strict. Missing, unexpected, or duplicate keys fail only the affected batch and are exposed through `ParallelBatchCorrelationException` on its item results. This avoids silently pairing the wrong response with an input.
+
+## Package
+
+The first package version is intentionally `0.1.0`. The public surface is kept small while the library is exercised in real workloads before a stable `1.0.0`.
