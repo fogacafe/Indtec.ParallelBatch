@@ -10,7 +10,8 @@ public static class ParallelBatch
         Action<ParallelBatchOptions>? configure = null,
         IProgress<ParallelBatchProgress>? progress = null,
         CancellationToken cancellationToken = default)
-        => ProcessCoreAsync(items, processor, null, null, configure, progress, cancellationToken);
+        => ProcessCoreAsync<TInput, TOutput, object>(
+            items, processor, null, null, configure, progress, cancellationToken);
 
     public static Task<ParallelBatchResult<TInput, TOutput>> ProcessAsync<TInput, TOutput, TKey>(
         IEnumerable<TInput> items,
@@ -42,7 +43,8 @@ public static class ParallelBatch
 
         var source = items.Select((value, index) => new Indexed<TInput>(index, value)).ToArray();
         if (source.Length == 0)
-            return new ParallelBatchResult<TInput, TOutput>(Array.Empty<ParallelItemResult<TInput, TOutput>>(), TimeSpan.Zero);
+            return new ParallelBatchResult<TInput, TOutput>(
+                Array.Empty<ParallelItemResult<TInput, TOutput>>(), TimeSpan.Zero);
 
         var batches = source
             .Select((item, index) => new { item, index })
@@ -83,7 +85,8 @@ public static class ParallelBatch
                                 $"The batch processor returned {outputs.Count} items for a batch containing {batch.Length} inputs.");
 
                         for (var i = 0; i < batch.Length; i++)
-                            results[batch[i].Index] = new(batch[i].Index, batch[i].Value, outputs[i], null);
+                            results[batch[i].Index] = new ParallelItemResult<TInput, TOutput>(
+                                batch[i].Index, batch[i].Value, outputs[i], null);
                     }
                     else
                     {
@@ -91,10 +94,12 @@ public static class ParallelBatch
                         foreach (var item in batch)
                         {
                             var key = inputKey(item.Value);
-                            if (!byKey.TryGetValue(key, out var output))
+                            TOutput output;
+                            if (!byKey.TryGetValue(key, out output!))
                                 throw new InvalidOperationException($"No output was returned for input key '{key}'.");
 
-                            results[item.Index] = new(item.Index, item.Value, output, null);
+                            results[item.Index] = new ParallelItemResult<TInput, TOutput>(
+                                item.Index, item.Value, output, null);
                         }
                     }
 
@@ -107,14 +112,16 @@ public static class ParallelBatch
                 catch (Exception exception)
                 {
                     foreach (var item in batch)
-                        results[item.Index] = new(item.Index, item.Value, default, exception);
+                        results[item.Index] = new ParallelItemResult<TInput, TOutput>(
+                            item.Index, item.Value, default, exception);
 
                     Interlocked.Add(ref failed, batch.Length);
                 }
                 finally
                 {
                     var done = Interlocked.Add(ref processed, batch.Length);
-                    progress?.Report(new ParallelBatchProgress(done, source.Length, Volatile.Read(ref succeeded), Volatile.Read(ref failed)));
+                    progress?.Report(new ParallelBatchProgress(
+                        done, source.Length, Volatile.Read(ref succeeded), Volatile.Read(ref failed)));
                 }
             }
         }
@@ -131,16 +138,15 @@ public static class ParallelBatch
             stopwatch.Elapsed);
     }
 
-    private static Task<ParallelBatchResult<TInput, TOutput>> ProcessCoreAsync<TInput, TOutput>(
-        IEnumerable<TInput> items,
-        Func<IReadOnlyList<TInput>, CancellationToken, Task<IReadOnlyList<TOutput>>> processor,
-        object? inputKey,
-        object? outputKey,
-        Action<ParallelBatchOptions>? configure,
-        IProgress<ParallelBatchProgress>? progress,
-        CancellationToken cancellationToken)
-        => ProcessCoreAsync<TInput, TOutput, object>(
-            items, processor, null, null, configure, progress, cancellationToken);
+    private sealed class Indexed<T>
+    {
+        public Indexed(int index, T value)
+        {
+            Index = index;
+            Value = value;
+        }
 
-    private readonly record struct Indexed<T>(int Index, T Value);
+        public int Index { get; }
+        public T Value { get; }
+    }
 }
