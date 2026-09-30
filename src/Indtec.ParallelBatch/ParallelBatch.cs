@@ -122,8 +122,7 @@ public static class ParallelBatch
         var processed = 0;
         var failed = 0;
         var stopwatch = Stopwatch.StartNew();
-        var successfulGroups = new bool[groups.Length];
-        Array.Fill(successfulGroups, true);
+        var successfulGroups = Enumerable.Repeat(true, groups.Length).ToArray();
 
         if (options.PrepareGroupAsync is not null)
         {
