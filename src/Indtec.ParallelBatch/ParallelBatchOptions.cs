@@ -1,11 +1,9 @@
 namespace Indtec.ParallelBatch;
 
-/// <summary>
-/// Configures how items are divided and processed.
-/// </summary>
-public sealed class ParallelBatchOptions
+/// <summary>Configures how items are divided and processed.</summary>
+public class ParallelBatchOptions
 {
-    /// <summary>Gets or sets the maximum number of items sent to one processor invocation.</summary>
+    /// <summary>Gets or sets the target maximum number of items sent to one processor invocation.</summary>
     public int BatchSize { get; set; } = 10;
 
     /// <summary>Gets or sets the maximum number of processor invocations allowed in flight at once.</summary>
@@ -15,13 +13,39 @@ public sealed class ParallelBatchOptions
     {
         if (BatchSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(BatchSize), "BatchSize must be greater than zero.");
-
         if (MaxConcurrency <= 0)
             throw new ArgumentOutOfRangeException(nameof(MaxConcurrency), "MaxConcurrency must be greater than zero.");
     }
 }
 
-/// <summary>Describes processing progress at the completion of a batch.</summary>
+/// <summary>Controls how groups influence batch boundaries.</summary>
+public enum GroupBatchMode
+{
+    /// <summary>Groups are used only for preparation. Normal item batching is used afterwards.</summary>
+    None,
+
+    /// <summary>Each group is sent as exactly one batch, regardless of <see cref="ParallelBatchOptions.BatchSize"/>.</summary>
+    OneBatchPerGroup,
+
+    /// <summary>
+    /// Groups are packed into batches without splitting a group. A group larger than BatchSize is sent intact.
+    /// </summary>
+    KeepTogether
+}
+
+/// <summary>Configures group-aware processing.</summary>
+public sealed class ParallelBatchGroupOptions<TInput> : ParallelBatchOptions
+{
+    /// <summary>Gets or sets how groups influence batch boundaries.</summary>
+    public GroupBatchMode BatchMode { get; set; } = GroupBatchMode.None;
+
+    /// <summary>
+    /// Gets or sets optional asynchronous preparation invoked exactly once for each group before processing.
+    /// </summary>
+    public Func<IReadOnlyList<TInput>, CancellationToken, Task>? PrepareGroupAsync { get; set; }
+}
+
+/// <summary>Describes processing progress at the completion of a batch or failed group preparation.</summary>
 public readonly struct ParallelBatchProgress
 {
     public ParallelBatchProgress(int processed, int total, int succeeded, int failed)

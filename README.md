@@ -51,6 +51,34 @@ var result = await ParallelBatch.ProcessAsync(
 
 Outputs are correlated back to their original inputs by key and exposed in the original input order.
 
+## Group-aware processing
+
+When items have a business group, use `ProcessGroupedAsync`. Grouping can be used only for one-time preparation, as the batch boundary itself, or as an atomic unit that must never be split across batches.
+
+```csharp
+var result = await ParallelBatch.ProcessGroupedAsync(
+    trades,
+    (batch, ct) => api.ValidateAsync(batch, ct),
+    trade => trade.GroupId,
+    options =>
+    {
+        options.BatchSize = 10;
+        options.MaxConcurrency = 6;
+        options.BatchMode = GroupBatchMode.KeepTogether;
+
+        options.PrepareGroupAsync = async (group, ct) =>
+        {
+            var ticker = await tickerService.GenerateAsync(ct);
+            foreach (var trade in group)
+                trade.Ticker = ticker;
+        };
+    });
+```
+
+`GroupBatchMode.None` uses groups only for preparation and then applies normal batching. `OneBatchPerGroup` sends each complete group as one processor invocation. `KeepTogether` packs groups toward `BatchSize` without splitting them; a single group larger than `BatchSize` is sent intact.
+
+Group members do not need to be contiguous in the original input. Preparation runs exactly once per group. If preparation fails, only that group's items fail and they are not sent to the processor. Successful groups continue normally. Final results still follow original input order.
+
 ## Partial failures
 
 A failed batch does not discard successful batches:

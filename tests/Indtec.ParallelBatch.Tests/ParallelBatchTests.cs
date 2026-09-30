@@ -282,6 +282,272 @@ public class ParallelBatchTests
         Assert.True(result.Items[2].Succeeded);
     }
 
+
+    [Fact]
+    public async Task ProcessGroupedAsync_None_UsesGroupsOnlyForPreparation()
+    {
+        var batches = new List<string[]>();
+        var prepared = new List<string>();
+
+        await ParallelBatch.ProcessGroupedAsync<GroupItem, GroupItem, string>(
+            new[] { new GroupItem("A1", "A"), new GroupItem("B1", "B"), new GroupItem("A2", "A"), new GroupItem("B2", "B") },
+            (batch, _) =>
+            {
+                batches.Add(batch.Select(x => x.Id).ToArray());
+                return Task.FromResult<IReadOnlyList<GroupItem>>(batch.ToArray());
+            },
+            x => x.Group,
+            o =>
+            {
+                o.BatchSize = 3;
+                o.MaxConcurrency = 1;
+                o.BatchMode = GroupBatchMode.None;
+                o.PrepareGroupAsync = (group, _) =>
+                {
+                    prepared.Add(group[0].Group);
+                    return Task.CompletedTask;
+                };
+            });
+
+        Assert.Equal(new[] { "A", "B" }, prepared);
+        Assert.Equal(new[] { "A1", "B1", "A2" }, batches[0]);
+        Assert.Equal(new[] { "B2" }, batches[1]);
+    }
+
+    [Fact]
+    public async Task ProcessGroupedAsync_OneBatchPerGroup_SendsEachWholeGroupOnce()
+    {
+        var batches = new List<string[]>();
+
+        await ParallelBatch.ProcessGroupedAsync<GroupItem, GroupItem, string>(
+            GroupedInput(),
+            (batch, _) =>
+            {
+                batches.Add(batch.Select(x => x.Id).ToArray());
+                return Task.FromResult<IReadOnlyList<GroupItem>>(batch.ToArray());
+            },
+            x => x.Group,
+            o =>
+            {
+                o.BatchSize = 1;
+                o.MaxConcurrency = 1;
+                o.BatchMode = GroupBatchMode.OneBatchPerGroup;
+            });
+
+        Assert.Equal(3, batches.Count);
+        Assert.Equal(new[] { "A1", "A2", "A3" }, batches[0]);
+        Assert.Equal(new[] { "B1", "B2" }, batches[1]);
+        Assert.Equal(new[] { "C1" }, batches[2]);
+    }
+
+    [Fact]
+    public async Task ProcessGroupedAsync_KeepTogether_PacksGroupsWithoutSplitting()
+    {
+        var input = new[]
+        {
+            new GroupItem("A1", "A"), new GroupItem("A2", "A"), new GroupItem("A3", "A"),
+            new GroupItem("B1", "B"), new GroupItem("B2", "B"),
+            new GroupItem("C1", "C"), new GroupItem("C2", "C"), new GroupItem("C3", "C")
+        };
+        var batches = new List<GroupItem[]>();
+
+        var result = await ParallelBatch.ProcessGroupedAsync<GroupItem, GroupItem, string>(
+            input,
+            (batch, _) =>
+            {
+                batches.Add(batch.ToArray());
+                return Task.FromResult<IReadOnlyList<GroupItem>>(batch.ToArray());
+            },
+            x => x.Group,
+            o =>
+            {
+                o.BatchSize = 5;
+                o.MaxConcurrency = 1;
+                o.BatchMode = GroupBatchMode.KeepTogether;
+            });
+
+        Assert.Equal(new[] { 5, 3 }, batches.Select(x => x.Length));
+        Assert.All(input.GroupBy(x => x.Group), group =>
+        {
+            var containingBatches = batches.Count(batch => batch.Any(x => x.Group == group.Key));
+            Assert.Equal(1, containingBatches);
+        });
+        Assert.Equal(input.Select(x => x.Id), result.Items.Select(x => x.Input.Id));
+    }
+
+    [Fact]
+    public async Task ProcessGroupedAsync_KeepTogether_DoesNotSplitOversizedGroup()
+    {
+        var input = Enumerable.Range(1, 7).Select(x => new GroupItem($"A{x}", "A"))
+            .Concat(new[] { new GroupItem("B1", "B") }).ToArray();
+        var sizes = new List<int>();
+
+        await ParallelBatch.ProcessGroupedAsync<GroupItem, GroupItem, string>(
+            input,
+            (batch, _) =>
+            {
+                sizes.Add(batch.Count);
+                return Task.FromResult<IReadOnlyList<GroupItem>>(batch.ToArray());
+            },
+            x => x.Group,
+            o =>
+            {
+                o.BatchSize = 5;
+                o.MaxConcurrency = 1;
+                o.BatchMode = GroupBatchMode.KeepTogether;
+            });
+
+        Assert.Equal(new[] { 7, 1 }, sizes);
+    }
+
+    [Fact]
+    public async Task ProcessGroupedAsync_PreparesNonContiguousGroupExactlyOnce_WithAllMembers()
+    {
+        var input = GroupedInput();
+        var prepared = new Dictionary<string, string[]>();
+
+        await ParallelBatch.ProcessGroupedAsync<GroupItem, GroupItem, string>(
+            input,
+            (batch, _) => Task.FromResult<IReadOnlyList<GroupItem>>(batch.ToArray()),
+            x => x.Group,
+            o =>
+            {
+                o.BatchSize = 2;
+                o.MaxConcurrency = 1;
+                o.PrepareGroupAsync = (group, _) =>
+                {
+                    prepared[group[0].Group] = group.Select(x => x.Id).ToArray();
+                    return Task.CompletedTask;
+                };
+            });
+
+        Assert.Equal(3, prepared.Count);
+        Assert.Equal(new[] { "A1", "A2", "A3" }, prepared["A"]);
+        Assert.Equal(new[] { "B1", "B2" }, prepared["B"]);
+        Assert.Equal(new[] { "C1" }, prepared["C"]);
+    }
+
+    [Fact]
+    public async Task ProcessGroupedAsync_PreparationFailure_FailsOnlyThatGroup_AndSkipsItsProcessor()
+    {
+        var processed = new List<string>();
+
+        var result = await ParallelBatch.ProcessGroupedAsync<GroupItem, GroupItem, string>(
+            GroupedInput(),
+            (batch, _) =>
+            {
+                processed.AddRange(batch.Select(x => x.Id));
+                return Task.FromResult<IReadOnlyList<GroupItem>>(batch.ToArray());
+            },
+            x => x.Group,
+            o =>
+            {
+                o.BatchSize = 2;
+                o.MaxConcurrency = 2;
+                o.BatchMode = GroupBatchMode.KeepTogether;
+                o.PrepareGroupAsync = (group, _) =>
+                {
+                    if (group[0].Group == "B") throw new InvalidOperationException("prepare boom");
+                    return Task.CompletedTask;
+                };
+            });
+
+        Assert.Equal(2, result.Failed);
+        Assert.All(result.Items.Where(x => x.Input.Group == "B"), x => Assert.IsType<InvalidOperationException>(x.Exception));
+        Assert.DoesNotContain("B1", processed);
+        Assert.DoesNotContain("B2", processed);
+        Assert.Equal(4, result.Succeeded);
+    }
+
+    [Fact]
+    public async Task ProcessGroupedAsync_PreservesOriginalOrder_WithKeyCorrelation()
+    {
+        var input = GroupedInput();
+
+        var result = await ParallelBatch.ProcessGroupedAsync<GroupItem, GroupItem, string, string>(
+            input,
+            (batch, _) => Task.FromResult<IReadOnlyList<GroupItem>>(batch.Reverse().ToArray()),
+            x => x.Id,
+            x => x.Id,
+            x => x.Group,
+            o =>
+            {
+                o.BatchSize = 4;
+                o.MaxConcurrency = 2;
+                o.BatchMode = GroupBatchMode.KeepTogether;
+            });
+
+        Assert.Equal(input.Select(x => x.Id), result.Items.Select(x => x.Output!.Id));
+    }
+
+    [Fact]
+    public async Task ProcessGroupedAsync_StillRefillsProcessorSlotsContinuously()
+    {
+        var firstCanFinish = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thirdStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var processing = ParallelBatch.ProcessGroupedAsync<GroupItem, GroupItem, string>(
+            new[] { new GroupItem("1", "A"), new GroupItem("2", "B"), new GroupItem("3", "C") },
+            async (batch, _) =>
+            {
+                if (batch[0].Id == "1") await firstCanFinish.Task;
+                else if (batch[0].Id == "2") await Task.Delay(20);
+                else thirdStarted.TrySetResult(true);
+                return batch.ToArray();
+            },
+            x => x.Group,
+            o =>
+            {
+                o.MaxConcurrency = 2;
+                o.BatchMode = GroupBatchMode.OneBatchPerGroup;
+            });
+
+        var started = await Task.WhenAny(thirdStarted.Task, Task.Delay(1000));
+        Assert.Same(thirdStarted.Task, started);
+        Assert.False(firstCanFinish.Task.IsCompleted);
+        firstCanFinish.TrySetResult(true);
+        await processing;
+    }
+
+    [Fact]
+    public async Task ProcessGroupedAsync_ProcessesEveryInputExactlyOnce()
+    {
+        var input = GroupedInput();
+        var seen = new List<string>();
+
+        var result = await ParallelBatch.ProcessGroupedAsync<GroupItem, GroupItem, string>(
+            input,
+            (batch, _) =>
+            {
+                seen.AddRange(batch.Select(x => x.Id));
+                return Task.FromResult<IReadOnlyList<GroupItem>>(batch.ToArray());
+            },
+            x => x.Group,
+            o =>
+            {
+                o.BatchSize = 4;
+                o.MaxConcurrency = 1;
+                o.BatchMode = GroupBatchMode.KeepTogether;
+            });
+
+        Assert.Equal(input.Length, seen.Count);
+        Assert.Equal(input.Length, seen.Distinct().Count());
+        Assert.Equal(input.Select(x => x.Id).OrderBy(x => x), seen.OrderBy(x => x));
+        Assert.Equal(input.Length, result.Total);
+    }
+
+    private static GroupItem[] GroupedInput() => new[]
+    {
+        new GroupItem("A1", "A"),
+        new GroupItem("B1", "B"),
+        new GroupItem("A2", "A"),
+        new GroupItem("C1", "C"),
+        new GroupItem("B2", "B"),
+        new GroupItem("A3", "A")
+    };
+
+    private sealed record GroupItem(string Id, string Group);
+
     private sealed record Item(string Key, int Value);
 
     private sealed class InlineProgress<T>(Action<T> report) : IProgress<T>
