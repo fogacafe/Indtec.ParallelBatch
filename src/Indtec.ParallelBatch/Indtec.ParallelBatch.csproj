@@ -9,7 +9,7 @@
     <NoWarn>$(NoWarn);1591</NoWarn>
 
     <PackageId>Indtec.ParallelBatch</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>Indtec</Authors>
     <Description>Lightweight .NET library for parallel batch processing with bounded concurrency, ordered results, progress reporting, partial failure handling, and cancellation support.</Description>
     <PackageTags>dotnet;parallel;batch;concurrency;async;processing</PackageTags>
