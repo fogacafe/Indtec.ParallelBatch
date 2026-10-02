@@ -151,7 +151,9 @@ public static class ParallelBatch
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {
-                        throw;
+                        if (options.CancellationBehavior == CancellationBehavior.Throw)
+                            throw;
+                        return;
                     }
                     catch (Exception exception)
                     {
