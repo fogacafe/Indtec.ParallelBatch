@@ -3,6 +3,8 @@ namespace Indtec.ParallelBatch;
 /// <summary>Configures how items are divided and processed.</summary>
 public class ParallelBatchOptions
 {
+    /// <summary>Gets or sets how cancellation is handled. The default propagates cancellation.</summary>
+    public CancellationBehavior CancellationBehavior { get; set; } = CancellationBehavior.Throw;
     /// <summary>Gets or sets the target maximum number of items sent to one processor invocation.</summary>
     public int BatchSize { get; set; } = 10;
 
@@ -16,6 +18,16 @@ public class ParallelBatchOptions
         if (MaxConcurrency <= 0)
             throw new ArgumentOutOfRangeException(nameof(MaxConcurrency), "MaxConcurrency must be greater than zero.");
     }
+}
+
+/// <summary>Controls how cancellation affects the processing result.</summary>
+public enum CancellationBehavior
+{
+    /// <summary>Propagates cancellation by throwing an <see cref="OperationCanceledException"/>.</summary>
+    Throw,
+
+    /// <summary>Stops scheduling new work, waits for in-flight work to settle, and returns completed item results.</summary>
+    ReturnCompleted
 }
 
 /// <summary>Controls how groups influence batch boundaries.</summary>
