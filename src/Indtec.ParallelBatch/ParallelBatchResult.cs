@@ -32,10 +32,12 @@ public sealed class ParallelBatchResult<TInput, TOutput>
 {
     internal ParallelBatchResult(
         IReadOnlyList<ParallelItemResult<TInput, TOutput>> items,
-        TimeSpan duration)
+        TimeSpan duration,
+        bool isCanceled = false)
     {
         Items = items;
         Duration = duration;
+        IsCanceled = isCanceled;
     }
 
     /// <summary>Gets item results in the same order as the original input.</summary>
@@ -44,5 +46,9 @@ public sealed class ParallelBatchResult<TInput, TOutput>
     public int Total => Items.Count;
     public int Succeeded => Items.Count(x => x.Succeeded);
     public int Failed => Items.Count(x => x.Failed);
+
+    /// <summary>Gets whether processing stopped because cancellation was requested.</summary>
+    public bool IsCanceled { get; }
+
     public TimeSpan Duration { get; }
 }

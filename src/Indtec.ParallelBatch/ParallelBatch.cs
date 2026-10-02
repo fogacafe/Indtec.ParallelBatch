@@ -77,14 +77,15 @@ public static class ParallelBatch
         var options = new ParallelBatchOptions();
         configure?.Invoke(options);
         options.Validate();
-        cancellationToken.ThrowIfCancellationRequested();
+        if (options.CancellationBehavior == CancellationBehavior.Throw)
+            cancellationToken.ThrowIfCancellationRequested();
 
         var source = Index(items);
         if (source.Length == 0) return Empty<TInput, TOutput>();
 
         var batches = Chunk(source, options.BatchSize);
         return await ExecuteBatchesAsync(
-            source, batches, processor, inputKey, outputKey, options.MaxConcurrency,
+            source, batches, processor, inputKey, outputKey, options.MaxConcurrency, options.CancellationBehavior,
             progress, cancellationToken, new ParallelItemResult<TInput, TOutput>?[source.Length],
             0, 0, 0, Stopwatch.StartNew()).ConfigureAwait(false);
     }
@@ -108,7 +109,8 @@ public static class ParallelBatch
         var options = new ParallelBatchGroupOptions<TInput>();
         configure?.Invoke(options);
         options.Validate();
-        cancellationToken.ThrowIfCancellationRequested();
+        if (options.CancellationBehavior == CancellationBehavior.Throw)
+            cancellationToken.ThrowIfCancellationRequested();
 
         var source = Index(items);
         if (source.Length == 0) return Empty<TInput, TOutput>();
@@ -132,7 +134,12 @@ public static class ParallelBatch
             {
                 while (true)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        if (options.CancellationBehavior == CancellationBehavior.Throw)
+                            cancellationToken.ThrowIfCancellationRequested();
+                        return;
+                    }
                     var groupIndex = Interlocked.Increment(ref nextGroup);
                     if (groupIndex >= groups.Length) return;
 
@@ -144,7 +151,9 @@ public static class ParallelBatch
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {
-                        throw;
+                        if (options.CancellationBehavior == CancellationBehavior.Throw)
+                            throw;
+                        return;
                     }
                     catch (Exception exception)
                     {
@@ -165,6 +174,16 @@ public static class ParallelBatch
                 .Select(_ => PrepareWorkerAsync())
                 .ToArray();
             await Task.WhenAll(prepareWorkers).ConfigureAwait(false);
+
+            if (cancellationToken.IsCancellationRequested &&
+                options.CancellationBehavior == CancellationBehavior.ReturnCompleted)
+            {
+                stopwatch.Stop();
+                return new ParallelBatchResult<TInput, TOutput>(
+                    results.Where(x => x is not null).Select(x => x!).ToArray(),
+                    stopwatch.Elapsed,
+                    isCanceled: true);
+            }
         }
 
         var preparedGroups = groups
@@ -194,7 +213,7 @@ public static class ParallelBatch
         }
 
         return await ExecuteBatchesAsync(
-            source, batches, processor, inputKey, outputKey, options.MaxConcurrency,
+            source, batches, processor, inputKey, outputKey, options.MaxConcurrency, options.CancellationBehavior,
             progress, cancellationToken, results, processed, 0, failed, stopwatch).ConfigureAwait(false);
     }
 
@@ -205,6 +224,7 @@ public static class ParallelBatch
         Func<TInput, TKey>? inputKey,
         Func<TOutput, TKey>? outputKey,
         int maxConcurrency,
+        CancellationBehavior cancellationBehavior,
         IProgress<ParallelBatchProgress>? progress,
         CancellationToken cancellationToken,
         ParallelItemResult<TInput, TOutput>?[] results,
@@ -223,11 +243,22 @@ public static class ParallelBatch
         {
             while (true)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    if (cancellationBehavior == CancellationBehavior.Throw)
+                        cancellationToken.ThrowIfCancellationRequested();
+                    return;
+                }
+
                 var batchIndex = Interlocked.Increment(ref nextBatch);
                 if (batchIndex >= batches.Length) return;
                 var batch = batches[batchIndex];
 
+                if (cancellationToken.IsCancellationRequested &&
+                    cancellationBehavior == CancellationBehavior.ReturnCompleted)
+                    return;
+
+                var completed = false;
                 try
                 {
                     var outputs = await processor(batch.Select(x => x.Value).ToArray(), cancellationToken).ConfigureAwait(false);
@@ -248,10 +279,13 @@ public static class ParallelBatch
                     }
 
                     Interlocked.Add(ref succeeded, batch.Length);
+                    completed = true;
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    throw;
+                    if (cancellationBehavior == CancellationBehavior.Throw)
+                        throw;
+                    return;
                 }
                 catch (Exception exception)
                 {
@@ -259,12 +293,16 @@ public static class ParallelBatch
                         results[item.Index] = new ParallelItemResult<TInput, TOutput>(
                             item.Index, item.Value, default, exception);
                     Interlocked.Add(ref failed, batch.Length);
+                    completed = true;
                 }
                 finally
                 {
-                    var done = Interlocked.Add(ref processed, batch.Length);
-                    progress?.Report(new ParallelBatchProgress(
-                        done, source.Length, Volatile.Read(ref succeeded), Volatile.Read(ref failed)));
+                    if (completed)
+                    {
+                        var done = Interlocked.Add(ref processed, batch.Length);
+                        progress?.Report(new ParallelBatchProgress(
+                            done, source.Length, Volatile.Read(ref succeeded), Volatile.Read(ref failed)));
+                    }
                 }
             }
         }
@@ -275,8 +313,14 @@ public static class ParallelBatch
         await Task.WhenAll(workers).ConfigureAwait(false);
         stopwatch.Stop();
 
+        var wasCanceled = cancellationToken.IsCancellationRequested &&
+                          cancellationBehavior == CancellationBehavior.ReturnCompleted;
         return new ParallelBatchResult<TInput, TOutput>(
-            results.Select(x => x!).ToArray(), stopwatch.Elapsed);
+            wasCanceled
+                ? results.Where(x => x is not null).Select(x => x!).ToArray()
+                : results.Select(x => x!).ToArray(),
+            stopwatch.Elapsed,
+            wasCanceled);
     }
 
     private static Indexed<T>[] Index<T>(IEnumerable<T> items)

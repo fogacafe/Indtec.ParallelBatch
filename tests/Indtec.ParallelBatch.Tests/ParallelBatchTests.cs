@@ -219,6 +219,75 @@ public class ParallelBatchTests
     }
 
     [Fact]
+    public async Task ProcessAsync_ReturnCompletedOnCancellation_WaitsForInFlightBatches_AndStopsScheduling()
+    {
+        using var cts = new CancellationTokenSource();
+        var started = new List<int>();
+        var gate = new object();
+        var bothStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var processing = ParallelBatch.ProcessAsync<int, int>(
+            Enumerable.Range(1, 6),
+            async (batch, _) =>
+            {
+                lock (gate)
+                {
+                    started.Add(batch[0]);
+                    if (started.Count == 2) bothStarted.TrySetResult(true);
+                }
+
+                await release.Task;
+                return batch.Select(x => x * 10).ToArray();
+            },
+            o =>
+            {
+                o.BatchSize = 1;
+                o.MaxConcurrency = 2;
+                o.CancellationBehavior = CancellationBehavior.ReturnCompleted;
+            },
+            cancellationToken: cts.Token);
+
+        await bothStarted.Task;
+        cts.Cancel();
+        release.TrySetResult(true);
+
+        var result = await processing;
+
+        Assert.True(result.IsCanceled);
+        Assert.Equal(2, result.Total);
+        Assert.Equal(2, result.Succeeded);
+        Assert.Equal(new[] { 1, 2 }, result.Items.Select(x => x.Input).OrderBy(x => x));
+        Assert.Equal(new[] { 10, 20 }, result.Items.Select(x => x.Output).OrderBy(x => x));
+        Assert.Equal(2, started.Count);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_ReturnCompletedOnCancellation_ReturnsAlreadyCompletedBatches()
+    {
+        using var cts = new CancellationTokenSource();
+
+        var result = await ParallelBatch.ProcessAsync<int, int>(
+            Enumerable.Range(1, 5),
+            (batch, _) =>
+            {
+                if (batch[0] == 3) cts.Cancel();
+                return Task.FromResult<IReadOnlyList<int>>(batch.Select(x => x * 10).ToArray());
+            },
+            o =>
+            {
+                o.BatchSize = 1;
+                o.MaxConcurrency = 1;
+                o.CancellationBehavior = CancellationBehavior.ReturnCompleted;
+            },
+            cancellationToken: cts.Token);
+
+        Assert.True(result.IsCanceled);
+        Assert.Equal(3, result.Total);
+        Assert.Equal(new[] { 10, 20, 30 }, result.Items.Select(x => x.Output));
+    }
+
+    [Fact]
     public async Task ProcessAsync_MissingAndUnexpectedKeys_AreReportedClearly()
     {
         var result = await ParallelBatch.ProcessAsync<Item, Item, string>(
